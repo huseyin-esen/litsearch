@@ -9,3 +9,6 @@ dist/
 build/
 config.py
 config.json
+build/
+dist/
+*.spec
