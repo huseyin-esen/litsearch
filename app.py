@@ -47,6 +47,13 @@ DEFAULTS = {
     "max_results":  "100",
 }
 
+# CrossRef type değerleri → görünen etiket
+ARTICLE_TYPES = {
+    "journal-article": "Research Article",
+    "review-article":  "Review",
+    "book-chapter":    "Book Section",
+}
+
 
 # ══════════════════════════════════════════════════════════════
 #  ARAMA FONKSİYONLARI
@@ -82,16 +89,19 @@ def format_article(article):
     if len(abstract) > 300:
         abstract = abstract[:297] + "…"
 
-    pub = article.get("_publisher", {})
+    pub         = article.get("_publisher", {})
+    article_type= ARTICLE_TYPES.get(article.get("type", ""), "")
     return {
         "title": title, "authors": authors, "journal": journal,
         "date": date_str or "—", "url": url, "doi": doi,
         "citation": citation, "abstract": abstract,
+        "article_type": article_type,
         "publisher_color": pub.get("color", "#1a5276"),
     }
 
 
-def search_publisher(publisher, keywords, days_back, max_results, keyword_mode, contact_email, log_fn):
+def search_publisher(publisher, keywords, days_back, max_results, keyword_mode,
+                     contact_email, article_types, log_fn):
     start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
     log_fn(f"  [{publisher['short']}] Aranıyor…")
 
@@ -117,6 +127,10 @@ def search_publisher(publisher, keywords, days_back, max_results, keyword_mode, 
     for item in items:
         item["_publisher"] = publisher
 
+    # Makale türü filtresi
+    if article_types and len(article_types) < len(ARTICLE_TYPES):
+        items = [it for it in items if it.get("type") in article_types]
+
     if keyword_mode == "AND":
         filtered = [
             it for it in items
@@ -124,7 +138,7 @@ def search_publisher(publisher, keywords, days_back, max_results, keyword_mode, 
                                   it.get("abstract","")).lower()
                    for kw in keywords)
         ]
-        log_fn(f"  [{publisher['short']}] {len(items)} → {len(filtered)} (AND filtre)")
+        log_fn(f"  [{publisher['short']}] {len(filtered)} makale (AND + tür filtresi)")
         return filtered
 
     log_fn(f"  [{publisher['short']}] {len(items)} makale bulundu")
@@ -173,12 +187,18 @@ def build_html(articles, cfg, active_pubs):
                     f"<em>{f['abstract']}</em></div>"
                     if f["abstract"] else ""
                 )
+                type_badge = (
+                    f'<span style="background:#eaf2ff;color:#1a5276;font-size:11px;'
+                    f'padding:1px 7px;border-radius:10px;margin-left:8px;'
+                    f'font-weight:normal;">{f["article_type"]}</span>'
+                    if f["article_type"] else ""
+                )
                 rows += f"""
                 <div style="background:#f8f9fa;border-left:4px solid {color};
                              margin:12px 0;padding:13px 16px;border-radius:4px;">
                   <div style="font-size:15px;font-weight:bold;color:{color};">
                     {i}. <a href="{f['url']}" style="color:{color};text-decoration:none;"
-                            target="_blank">{f['title']}</a>
+                            target="_blank">{f['title']}</a>{type_badge}
                   </div>
                   <div style="font-size:13px;color:#555;margin-top:4px;">
                     <strong>Authors:</strong> {f['authors']}
@@ -372,6 +392,21 @@ class LiteratureScannerApp:
                        width=8, font=(self.FONT, 10), relief="solid", bd=1,
                        bg="white").pack(anchor="w", ipady=4)
 
+        # Makale türü
+        tk.Label(frm, text="Makale Türü:", font=(self.FONT, 9),
+                 anchor="w").pack(fill="x", pady=(12, 2))
+        type_row = tk.Frame(frm)
+        type_row.pack(anchor="w")
+        self.type_vars = {}
+        labels = {"journal-article": "Research Article",
+                  "review-article":  "Review",
+                  "book-chapter":    "Book Section"}
+        for key, label in labels.items():
+            v = tk.BooleanVar(value=True)
+            self.type_vars[key] = v
+            ttk.Checkbutton(type_row, text=label, variable=v).pack(
+                side="left", padx=(0, 12))
+
     def _publisher_section(self, parent):
         frm = ttk.LabelFrame(parent, text="  Yayıncılar — Taranacakları İşaretleyin",
                               padding=10)
@@ -448,10 +483,13 @@ class LiteratureScannerApp:
         keywords  = [k.strip() for k in kw_raw.split(",") if k.strip()]
         active    = [p for p in PUBLISHERS if self.pub_vars[p["short"]].get()]
 
+        article_types = [k for k, v in self.type_vars.items() if v.get()]
+
         errors = []
-        if not recipient:  errors.append("• Alıcı e-posta boş olamaz.")
-        if not keywords:   errors.append("• En az bir anahtar kelime girin.")
-        if not active:     errors.append("• En az bir yayıncı seçin.")
+        if not recipient:      errors.append("• Alıcı e-posta boş olamaz.")
+        if not keywords:       errors.append("• En az bir anahtar kelime girin.")
+        if not active:         errors.append("• En az bir yayıncı seçin.")
+        if not article_types:  errors.append("• En az bir makale türü seçin.")
 
         try:
             days = int(self.v_days.get())
@@ -478,6 +516,7 @@ class LiteratureScannerApp:
             "days_back":       days,
             "max_results":     maxr,
             "active_pubs":     active,
+            "article_types":   article_types,
         }
 
     def _start_scan(self):
@@ -514,6 +553,7 @@ class LiteratureScannerApp:
                     max_results=cfg["max_results"],
                     keyword_mode=cfg["keyword_mode"],
                     contact_email=cfg["recipient_email"],
+                    article_types=cfg["article_types"],
                     log_fn=self._log,
                 )
                 all_articles.extend(results)
