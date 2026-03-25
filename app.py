@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════╗
-║      Academic Literature Scanner — GUI v1.0                 ║
+║      Academic Literature Scanner — GUI v2.0                 ║
 ║      Arayüzlü Akademik Dergi Tarama Programı                ║
 ╚══════════════════════════════════════════════════════════════╝
 
@@ -18,16 +18,16 @@ from tkinter import ttk, scrolledtext, messagebox
 import threading
 import queue
 import requests
-import smtplib
 import re
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+
+from config import BREVO_API_KEY, SENDER_EMAIL, SENDER_NAME
 
 
 # ══════════════════════════════════════════════════════════════
 #  YAYINCI LİSTESİ
 # ══════════════════════════════════════════════════════════════
+
 PUBLISHERS = [
     {"name": "ACS Publications",          "short": "ACS",      "doi_prefix": "10.1021", "url": "https://pubs.acs.org/",                    "color": "#1a5276"},
     {"name": "Wiley Online Library",      "short": "Wiley",    "doi_prefix": "10.1002", "url": "https://onlinelibrary.wiley.com/",          "color": "#7d3c98"},
@@ -41,19 +41,15 @@ PUBLISHERS = [
     {"name": "Palgrave Macmillan",        "short": "Palgrave", "doi_prefix": "10.1057", "url": "https://www.palgrave.com/journals",        "color": "#4a148c"},
 ]
 
-# Varsayılan değerler — kişisel bilgiler boş bırakılmıştır
 DEFAULTS = {
-    "sender_email":    "",          # Gmail adresiniz
-    "recipient_email": "",          # Sonuçların gönderileceği e-posta
-    "keywords":        "",          # Örn: biobased, renewable, sustainable
-    "keyword_mode":    "OR",
-    "days_back":       "7",
-    "max_results":     "100",
+    "keyword_mode": "OR",
+    "days_back":    "7",
+    "max_results":  "100",
 }
 
 
 # ══════════════════════════════════════════════════════════════
-#  ARAMA VE E-POSTA FONKSİYONLARI
+#  ARAMA FONKSİYONLARI
 # ══════════════════════════════════════════════════════════════
 
 def _clean(text):
@@ -61,10 +57,10 @@ def _clean(text):
 
 
 def format_article(article):
-    title    = _clean(" ".join(article.get("title", ["Başlık yok"])))
-    journal  = ", ".join(article.get("container-title", ["Dergi bilinmiyor"]))
-    doi      = article.get("DOI", "")
-    url      = f"https://doi.org/{doi}" if doi else article.get("URL", "")
+    title   = _clean(" ".join(article.get("title", ["Başlık yok"])))
+    journal = ", ".join(article.get("container-title", ["Dergi bilinmiyor"]))
+    doi     = article.get("DOI", "")
+    url     = f"https://doi.org/{doi}" if doi else article.get("URL", "")
 
     raw_authors = article.get("author", [])
     names = [f"{a.get('given','')} {a.get('family','')}".strip()
@@ -91,7 +87,6 @@ def format_article(article):
         "title": title, "authors": authors, "journal": journal,
         "date": date_str or "—", "url": url, "doi": doi,
         "citation": citation, "abstract": abstract,
-        "publisher_name": pub.get("name", ""),
         "publisher_color": pub.get("color", "#1a5276"),
     }
 
@@ -135,6 +130,10 @@ def search_publisher(publisher, keywords, days_back, max_results, keyword_mode, 
     log_fn(f"  [{publisher['short']}] {len(items)} makale bulundu")
     return items
 
+
+# ══════════════════════════════════════════════════════════════
+#  E-POSTA FONKSİYONLARI (BREVO API)
+# ══════════════════════════════════════════════════════════════
 
 def build_html(articles, cfg, active_pubs):
     keywords  = cfg["keywords"]
@@ -233,64 +232,39 @@ def build_html(articles, cfg, active_pubs):
 </body></html>"""
 
 
-def build_plain(articles, cfg, active_pubs):
-    lines = [
-        f"Academic Literature Scan — {len(active_pubs)} Yayıncı",
-        "=" * 60,
-        f"Tarih    : {datetime.now().strftime('%d %B %Y')}",
-        f"Keywords : {', '.join(cfg['keywords'])}",
-        f"Mod      : {cfg['keyword_mode']}",
-        f"Dönem    : son {cfg['days_back']} gün",
-        f"Toplam   : {len(articles)} makale",
-        "",
-    ]
-    for pub in active_pubs:
-        pub_articles = [a for a in articles
-                        if a.get("_publisher", {}).get("name") == pub["name"]]
-        lines += [f"── {pub['name']} ({len(pub_articles)} makale) ──", ""]
-        for i, art in enumerate(pub_articles, 1):
-            f = format_article(art)
-            lines += [
-                f"{i}. {f['title']}",
-                f"   Authors  : {f['authors']}",
-                f"   Journal  : {f['journal']} {f['citation']}",
-                f"   Published: {f['date']}",
-                f"   URL      : {f['url']}", "",
-            ]
-    return "\n".join(lines)
+def send_email_brevo(articles, cfg, active_pubs, log_fn):
+    recipient = cfg["recipient_email"]
+    date_tag  = datetime.now().strftime("%Y-%m-%d")
+    n         = len(articles)
 
-
-def send_email(articles, cfg, active_pubs, log_fn):
-    sender, recipient = cfg["sender_email"], cfg["recipient_email"]
-    date_tag = datetime.now().strftime("%Y-%m-%d")
-    n = len(articles)
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = (
+    subject = (
         f"Literature Scan [{date_tag}] — {n} makale "
         f"| {len(active_pubs)} yayıncı | {', '.join(cfg['keywords'])}"
     )
-    msg["From"], msg["To"] = sender, recipient
 
-    msg.attach(MIMEText(build_plain(articles, cfg, active_pubs), "plain", "utf-8"))
-    msg.attach(MIMEText(build_html(articles,  cfg, active_pubs), "html",  "utf-8"))
-
-    log_fn("\n  Gmail'e bağlanılıyor (smtp.gmail.com:587)…")
+    log_fn("\n  Brevo API ile e-posta gönderiliyor…")
     try:
-        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=15)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-        server.login(sender, cfg["sender_password"])
-        server.sendmail(sender, recipient, msg.as_string())
-        server.quit()
-        log_fn(f"  ✓ E-posta gönderildi → {recipient}")
-        return True
-    except smtplib.SMTPAuthenticationError:
-        log_fn("  HATA: Gmail kimlik doğrulaması başarısız.")
-        log_fn("  ‣ 16 haneli App Password girdiğinizden emin olun.")
-        return False
-    except Exception as e:
+        response = requests.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={
+                "api-key":      BREVO_API_KEY,
+                "content-type": "application/json",
+            },
+            json={
+                "sender":      {"name": SENDER_NAME, "email": SENDER_EMAIL},
+                "to":          [{"email": recipient}],
+                "subject":     subject,
+                "htmlContent": build_html(articles, cfg, active_pubs),
+            },
+            timeout=30,
+        )
+        if response.status_code in (200, 201):
+            log_fn(f"  ✓ E-posta gönderildi → {recipient}")
+            return True
+        else:
+            log_fn(f"  HATA: {response.status_code} — {response.text}")
+            return False
+    except requests.RequestException as e:
         log_fn(f"  HATA: {e}")
         return False
 
@@ -303,7 +277,6 @@ class LiteratureScannerApp:
 
     BG       = "#f4f6f8"
     HEADER   = "#1a5276"
-    ACCENT   = "#2874a6"
     BTN_RUN  = "#1e8449"
     BTN_STOP = "#7f8c8d"
     FONT     = "Segoe UI" if __import__("sys").platform == "win32" else "Helvetica"
@@ -315,14 +288,14 @@ class LiteratureScannerApp:
         self.pub_vars  = {p["short"]: tk.BooleanVar(value=True) for p in PUBLISHERS}
 
         self.root.title("Academic Literature Scanner  v2.0")
-        self.root.geometry("820x720")
-        self.root.minsize(700, 600)
+        self.root.geometry("820x660")
+        self.root.minsize(700, 560)
         self.root.configure(bg=self.BG)
 
         self._build_ui()
         self._poll_log()
 
-    # ── UI construction ────────────────────────────────────────
+    # ── UI ─────────────────────────────────────────────────────
 
     def _build_ui(self):
         self._header()
@@ -331,7 +304,7 @@ class LiteratureScannerApp:
 
         top = tk.Frame(content, bg=self.BG)
         top.pack(fill="x")
-        self._email_section(top)
+        self._recipient_section(top)
         self._search_section(top)
 
         self._publisher_section(content)
@@ -344,135 +317,55 @@ class LiteratureScannerApp:
         tk.Label(hdr, text="Academic Literature Scanner",
                  font=(self.FONT, 17, "bold"),
                  bg=self.HEADER, fg="white").pack()
-        tk.Label(hdr, text="10 Yayıncı  ·  CrossRef API  ·  Gmail",
+        tk.Label(hdr, text="10 Yayıncı  ·  CrossRef API  ·  E-Posta",
                  font=(self.FONT, 9),
                  bg=self.HEADER, fg="#aed6f1").pack()
 
-    # Registry of active placeholder entries: {StringVar: placeholder_text}
-    _placeholders: dict = {}
-
-    def _bg(self, widget):
-        """Safely return a widget's background colour.
-        ttk widgets don't support widget['bg'] — fall back to self.BG."""
-        for key in ("background", "bg"):
-            try:
-                return widget.cget(key)
-            except tk.TclError:
-                pass
-        return self.BG
-
-    def _entry(self, parent, label, var, is_password=False, width=None, placeholder=""):
-        """Create a labelled Entry, optionally with greyed placeholder text."""
-        tk.Label(parent, text=label, font=(self.FONT, 9),
-                 bg=self._bg(parent), anchor="w").pack(fill="x", pady=(8, 1))
-
-        entry = tk.Entry(parent, textvariable=var, font=(self.FONT, 10),
-                         relief="solid", bd=1, bg="white")
-        if width:
-            entry.config(width=width)
-        entry.pack(fill="x", ipady=5)
-
-        if placeholder:
-            LiteratureScannerApp._placeholders[str(var)] = placeholder
-            # Show placeholder if field is empty
-            if not var.get():
-                var.set(placeholder)
-                entry.config(fg="#aaaaaa")
-
-            def _focus_in(e, v=var, pw=is_password, ent=entry, ph=placeholder):
-                if v.get() == ph:
-                    v.set("")
-                    ent.config(fg="black", show="●" if pw else "")
-
-            def _focus_out(e, v=var, pw=is_password, ent=entry, ph=placeholder):
-                if not v.get():
-                    v.set(ph)
-                    ent.config(fg="#aaaaaa", show="")
-
-            entry.bind("<FocusIn>",  _focus_in)
-            entry.bind("<FocusOut>", _focus_out)
-        elif is_password:
-            entry.config(show="●")
-
-    def _email_section(self, parent):
-        frm = ttk.LabelFrame(parent, text="  E-Posta Ayarları", padding=12)
+    def _recipient_section(self, parent):
+        frm = ttk.LabelFrame(parent, text="  E-Posta", padding=12)
         frm.pack(side="left", fill="both", expand=True, padx=(0, 8))
-        frm.configure(style="Card.TLabelframe")
 
-        self.v_sender   = tk.StringVar(value=DEFAULTS["sender_email"])
-        self.v_password = tk.StringVar()
-        self.v_recipient= tk.StringVar(value=DEFAULTS["recipient_email"])
+        tk.Label(frm, text="Sonuçların gönderileceği e-posta:",
+                 font=(self.FONT, 9), anchor="w").pack(fill="x", pady=(0, 4))
+        self.v_recipient = tk.StringVar()
+        tk.Entry(frm, textvariable=self.v_recipient,
+                 font=(self.FONT, 11), relief="solid", bd=1,
+                 bg="white").pack(fill="x", ipady=6)
 
-        self._entry(frm, "Gönderen e-posta (Gmail):", self.v_sender,
-                    placeholder="ornek@gmail.com")
-        self._entry(frm, "Gmail App Password:",        self.v_password,
-                    is_password=True, placeholder="16 haneli App Password")
-
-        # Show/hide password toggle
-        self.show_pwd = tk.BooleanVar(value=False)
-        tk.Checkbutton(frm, text="Şifreyi göster", variable=self.show_pwd,
-                       bg=self._bg(frm),
-                       command=self._toggle_password,
-                       font=(self.FONT, 8)).pack(anchor="e")
-        self._pwd_entry = None  # will reference via re-build
-
-        self._entry(frm, "Alıcı e-posta:", self.v_recipient,
-                    placeholder="sonuclar@kurum.edu.tr")
-
-        # Help text
         tk.Label(frm,
-                 text="⚠  Gmail App Password için:\nmyaccount.google.com → Güvenlik → Uygulama Şifreleri",
-                 font=(self.FONT, 8), bg=self._bg(frm),
-                 fg="#888", justify="left").pack(anchor="w", pady=(10, 0))
-
-    def _toggle_password(self):
-        for widget in self.root.winfo_children():
-            self._toggle_in(widget)
-
-    def _toggle_in(self, widget):
-        if isinstance(widget, tk.Entry):
-            try:
-                if str(widget.cget("textvariable")) == str(self.v_password):
-                    widget.config(show="" if self.show_pwd.get() else "●")
-            except Exception:
-                pass
-        for child in widget.winfo_children():
-            self._toggle_in(child)
+                 text="Tarama sonuçları bu adrese HTML rapor olarak gönderilir.",
+                 font=(self.FONT, 8), fg="#888", anchor="w").pack(fill="x", pady=(6, 0))
 
     def _search_section(self, parent):
         frm = ttk.LabelFrame(parent, text="  Arama Ayarları", padding=12)
         frm.pack(side="left", fill="both", expand=True)
 
-        # Keywords
-        self.v_keywords = tk.StringVar(value=DEFAULTS["keywords"])
-        self._entry(frm, "Anahtar Kelimeler (virgülle ayırın):", self.v_keywords,
-                    placeholder="örn: biobased, renewable, sustainable")
+        tk.Label(frm, text="Anahtar Kelimeler (virgülle ayırın):",
+                 font=(self.FONT, 9), anchor="w").pack(fill="x", pady=(0, 1))
+        self.v_keywords = tk.StringVar()
+        tk.Entry(frm, textvariable=self.v_keywords,
+                 font=(self.FONT, 10), relief="solid", bd=1,
+                 bg="white").pack(fill="x", ipady=5)
 
-        # Mode
-        bg = self._bg(frm)
         tk.Label(frm, text="Arama Modu:", font=(self.FONT, 9),
-                 bg=bg, anchor="w").pack(fill="x", pady=(12, 2))
-        mode_frm = tk.Frame(frm, bg=bg)
+                 anchor="w").pack(fill="x", pady=(12, 2))
+        mode_frm = tk.Frame(frm)
         mode_frm.pack(anchor="w")
         self.v_mode = tk.StringVar(value=DEFAULTS["keyword_mode"])
         for text, val in [("OR  — herhangi bir kelime", "OR"),
                            ("AND — tüm kelimeler", "AND")]:
-            tk.Radiobutton(mode_frm, text=text, variable=self.v_mode, value=val,
-                           bg=bg, font=(self.FONT, 9),
-                           activebackground=bg).pack(side="left", padx=(0, 14))
+            tk.Radiobutton(mode_frm, text=text, variable=self.v_mode,
+                           value=val, font=(self.FONT, 9)).pack(side="left", padx=(0, 14))
 
-        # Days & max
-        num_row = tk.Frame(frm, bg=bg)
+        num_row = tk.Frame(frm)
         num_row.pack(fill="x", pady=(12, 0))
-
-        for label, var_name, default, frm_side in [
-            ("Son kaç gün:",          "v_days", DEFAULTS["days_back"],    "left"),
-            ("Maks sonuç / yayıncı:", "v_max",  DEFAULTS["max_results"],  "left"),
+        for label, var_name, default in [
+            ("Son kaç gün:",          "v_days", DEFAULTS["days_back"]),
+            ("Maks sonuç / yayıncı:", "v_max",  DEFAULTS["max_results"]),
         ]:
-            cell = tk.Frame(num_row, bg=bg)
-            cell.pack(side=frm_side, fill="x", expand=True, padx=(0, 8))
-            tk.Label(cell, text=label, font=(self.FONT, 9),
-                     bg=bg).pack(anchor="w")
+            cell = tk.Frame(num_row)
+            cell.pack(side="left", fill="x", expand=True, padx=(0, 8))
+            tk.Label(cell, text=label, font=(self.FONT, 9)).pack(anchor="w")
             var = tk.StringVar(value=default)
             setattr(self, var_name, var)
             tk.Spinbox(cell, textvariable=var, from_=1, to=500, increment=1,
@@ -486,14 +379,14 @@ class LiteratureScannerApp:
 
         cols = 5
         for i, pub in enumerate(PUBLISHERS):
-            cb = ttk.Checkbutton(frm, text=pub["short"],
-                                 variable=self.pub_vars[pub["short"]])
-            cb.grid(row=i // cols, column=i % cols, sticky="w", padx=10, pady=3)
+            ttk.Checkbutton(frm, text=pub["short"],
+                            variable=self.pub_vars[pub["short"]]).grid(
+                row=i // cols, column=i % cols, sticky="w", padx=10, pady=3)
 
-        btn_row = tk.Frame(frm, bg=self._bg(frm))
+        btn_row = tk.Frame(frm)
         btn_row.grid(row=(len(PUBLISHERS) - 1) // cols + 1,
                      column=0, columnspan=cols, sticky="w", pady=(8, 2))
-        for text, cmd, bg in [("Tümünü Seç",   self._sel_all,  "#d5e8d4"),
+        for text, cmd, bg in [("Tümünü Seç",    self._sel_all,   "#d5e8d4"),
                                ("Tümünü Kaldır", self._desel_all, "#f8cecc")]:
             tk.Button(btn_row, text=text, command=cmd, relief="flat",
                       bg=bg, font=(self.FONT, 8), padx=8, pady=3,
@@ -528,9 +421,9 @@ class LiteratureScannerApp:
             insertbackground="white", relief="flat", state="disabled"
         )
         self.log_box.pack(fill="both", expand=True)
-        self._log("Hazır.  Bilgileri doldurun ve 'Taramayı Başlat'a tıklayın.")
+        self._log("Hazır.  E-posta adresinizi girin ve 'Taramayı Başlat'a tıklayın.")
 
-    # ── Logging ────────────────────────────────────────────────
+    # ── Log ────────────────────────────────────────────────────
 
     def _log(self, msg):
         self.log_queue.put(msg)
@@ -547,28 +440,18 @@ class LiteratureScannerApp:
             pass
         self.root.after(100, self._poll_log)
 
-    # ── Validation ─────────────────────────────────────────────
-
-    def _real(self, var):
-        """Return the var's value, or '' if it still contains placeholder text."""
-        val = var.get().strip()
-        ph  = LiteratureScannerApp._placeholders.get(str(var), "")
-        return "" if val == ph else val
+    # ── Validation & Scan ──────────────────────────────────────
 
     def _collect(self):
-        sender    = self._real(self.v_sender)
-        password  = self._real(self.v_password)
-        recipient = self._real(self.v_recipient)
-        kw_raw    = self._real(self.v_keywords)
+        recipient = self.v_recipient.get().strip()
+        kw_raw    = self.v_keywords.get().strip()
         keywords  = [k.strip() for k in kw_raw.split(",") if k.strip()]
         active    = [p for p in PUBLISHERS if self.pub_vars[p["short"]].get()]
 
         errors = []
-        if not sender:    errors.append("• Gönderen e-posta boş olamaz.")
-        if not password:  errors.append("• App Password boş olamaz.")
-        if not recipient: errors.append("• Alıcı e-posta boş olamaz.")
-        if not keywords:  errors.append("• En az bir anahtar kelime girin.")
-        if not active:    errors.append("• En az bir yayıncı seçin.")
+        if not recipient:  errors.append("• Alıcı e-posta boş olamaz.")
+        if not keywords:   errors.append("• En az bir anahtar kelime girin.")
+        if not active:     errors.append("• En az bir yayıncı seçin.")
 
         try:
             days = int(self.v_days.get())
@@ -589,8 +472,6 @@ class LiteratureScannerApp:
             return None
 
         return {
-            "sender_email":    sender,
-            "sender_password": password,
             "recipient_email": recipient,
             "keywords":        keywords,
             "keyword_mode":    self.v_mode.get(),
@@ -598,8 +479,6 @@ class LiteratureScannerApp:
             "max_results":     maxr,
             "active_pubs":     active,
         }
-
-    # ── Scan ───────────────────────────────────────────────────
 
     def _start_scan(self):
         if self.running:
@@ -611,8 +490,6 @@ class LiteratureScannerApp:
         self.running = True
         self.btn_start.configure(state="disabled", text="⏳   Taranıyor…",
                                  bg=self.BTN_STOP)
-
-        # Clear log
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
@@ -641,7 +518,6 @@ class LiteratureScannerApp:
                 )
                 all_articles.extend(results)
 
-            # Deduplicate by DOI
             seen, unique = set(), []
             for art in all_articles:
                 doi = art.get("DOI", id(art))
@@ -651,11 +527,11 @@ class LiteratureScannerApp:
 
             self._log(f"\n  ── Toplam: {len(unique)} makale bulundu ──")
 
-            success = send_email(
-                articles   = unique,
-                cfg        = cfg,
-                active_pubs= cfg["active_pubs"],
-                log_fn     = self._log,
+            success = send_email_brevo(
+                articles    = unique,
+                cfg         = cfg,
+                active_pubs = cfg["active_pubs"],
+                log_fn      = self._log,
             )
 
             self._log("")
