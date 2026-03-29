@@ -19,9 +19,12 @@ import threading
 import queue
 import requests
 import re
+import smtplib
 from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
-from config import BREVO_API_KEY, SENDER_EMAIL, SENDER_NAME
+from config import SENDER_EMAIL, SENDER_PASSWORD, SENDER_NAME
 
 
 # ══════════════════════════════════════════════════════════════
@@ -252,8 +255,8 @@ def build_html(articles, cfg, active_pubs):
 </body></html>"""
 
 
-def send_email_brevo(articles, cfg, active_pubs, log_fn):
-    recipient = cfg["recipient_email"]
+def send_email_smtp(articles, cfg, active_pubs, log_fn):
+    recipient = cfg["recipient_email"].strip()
     date_tag  = datetime.now().strftime("%Y-%m-%d")
     n         = len(articles)
 
@@ -262,29 +265,27 @@ def send_email_brevo(articles, cfg, active_pubs, log_fn):
         f"| {len(active_pubs)} yayıncı | {', '.join(cfg['keywords'])}"
     )
 
-    log_fn("\n  Brevo API ile e-posta gönderiliyor…")
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = f"{SENDER_NAME} <{SENDER_EMAIL}>"
+    msg["To"]      = recipient
+    msg.attach(MIMEText(build_html(articles, cfg, active_pubs), "html", "utf-8"))
+
+    log_fn("\n  Gmail üzerinden e-posta gönderiliyor…")
     try:
-        response = requests.post(
-            "https://api.brevo.com/v3/smtp/email",
-            headers={
-                "api-key":      BREVO_API_KEY,
-                "content-type": "application/json",
-            },
-            json={
-                "sender":      {"name": SENDER_NAME, "email": SENDER_EMAIL},
-                "to":          [{"email": recipient}],
-                "subject":     subject,
-                "htmlContent": build_html(articles, cfg, active_pubs),
-            },
-            timeout=30,
-        )
-        if response.status_code in (200, 201):
-            log_fn(f"  ✓ E-posta gönderildi → {recipient}")
-            return True
-        else:
-            log_fn(f"  HATA: {response.status_code} — {response.text}")
-            return False
-    except requests.RequestException as e:
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=15)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        server.sendmail(SENDER_EMAIL, recipient, msg.as_string())
+        server.quit()
+        log_fn(f"  ✓ E-posta gönderildi → {recipient}")
+        return True
+    except smtplib.SMTPAuthenticationError:
+        log_fn("  HATA: Gmail kimlik doğrulaması başarısız.")
+        return False
+    except Exception as e:
         log_fn(f"  HATA: {e}")
         return False
 
@@ -567,7 +568,7 @@ class LiteratureScannerApp:
 
             self._log(f"\n  ── Toplam: {len(unique)} makale bulundu ──")
 
-            success = send_email_brevo(
+            success = send_email_smtp(
                 articles    = unique,
                 cfg         = cfg,
                 active_pubs = cfg["active_pubs"],
