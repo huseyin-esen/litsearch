@@ -307,7 +307,8 @@ class LiteratureScannerApp:
         self.log_queue          = queue.Queue()
         self.running            = False
         self.pub_vars           = {p["short"]: tk.BooleanVar(value=True) for p in PUBLISHERS}
-        self._sched_last_run    = None
+        self._sched_interval_last = None   # interval modunda son çalışma zamanı
+        self._sched_daily_last    = None   # günlük modunda son çalışma tarihi
 
         self.root.title("Academic Literature Scanner  v2.0")
         self.root.geometry("820x720")
@@ -409,7 +410,8 @@ class LiteratureScannerApp:
 
     def _scheduler_toggle(self):
         if self.v_sched_active.get():
-            self._sched_last_run = None
+            self._sched_interval_last = datetime.now()  # interval hemen tetiklenmesin
+            self._sched_daily_last    = None             # günlük bugün tetiklenebilir
             self._update_next_run()
             self._scheduler_tick()
         else:
@@ -423,7 +425,7 @@ class LiteratureScannerApp:
         if mode == "interval":
             try:   hours = int(self.v_interval.get())
             except ValueError: hours = 24
-            base     = self._sched_last_run or now
+            base     = self._sched_interval_last or now
             next_run = base + timedelta(hours=hours)
         else:
             try:
@@ -447,8 +449,8 @@ class LiteratureScannerApp:
         if mode == "interval":
             try:   hours = int(self.v_interval.get())
             except ValueError: hours = 24
-            if (self._sched_last_run is None or
-                    (now - self._sched_last_run).total_seconds() >= hours * 3600):
+            elapsed = (now - self._sched_interval_last).total_seconds()
+            if elapsed >= hours * 3600:
                 fire = True
         else:
             try:
@@ -458,15 +460,17 @@ class LiteratureScannerApp:
                 pass
             else:
                 same_minute = (now.hour == h and now.minute == m)
-                not_today   = (self._sched_last_run is None or
-                               self._sched_last_run.date() < now.date())
+                not_today   = (self._sched_daily_last != now.date())
                 if same_minute and not_today:
                     fire = True
 
         if fire and not self.running:
             cfg = self._collect_silent()
             if cfg:
-                self._sched_last_run = now
+                if mode == "interval":
+                    self._sched_interval_last = now
+                else:
+                    self._sched_daily_last = now.date()
                 self._update_next_run()
                 self._log(f"\n  ⏰ Otomatik tarama — {now.strftime('%d %b %Y  %H:%M')}")
                 self._execute_scan(cfg)
