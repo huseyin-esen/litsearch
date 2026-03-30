@@ -303,14 +303,15 @@ class LiteratureScannerApp:
     FONT     = "Segoe UI" if __import__("sys").platform == "win32" else "Helvetica"
 
     def __init__(self, root):
-        self.root      = root
-        self.log_queue = queue.Queue()
-        self.running   = False
-        self.pub_vars  = {p["short"]: tk.BooleanVar(value=True) for p in PUBLISHERS}
+        self.root               = root
+        self.log_queue          = queue.Queue()
+        self.running            = False
+        self.pub_vars           = {p["short"]: tk.BooleanVar(value=True) for p in PUBLISHERS}
+        self._sched_last_run    = None
 
         self.root.title("Academic Literature Scanner  v2.0")
-        self.root.geometry("820x660")
-        self.root.minsize(700, 560)
+        self.root.geometry("820x720")
+        self.root.minsize(700, 620)
         self.root.configure(bg=self.BG)
 
         self._build_ui()
@@ -328,6 +329,7 @@ class LiteratureScannerApp:
         self._recipient_section(top)
         self._search_section(top)
 
+        self._scheduler_section(content)
         self._publisher_section(content)
         self._action_bar(content)
         self._log_section(content)
@@ -356,6 +358,120 @@ class LiteratureScannerApp:
         tk.Label(frm,
                  text="Tarama sonuçları bu adrese HTML rapor olarak gönderilir.",
                  font=(self.FONT, 8), fg="#888", anchor="w").pack(fill="x", pady=(6, 0))
+
+    def _scheduler_section(self, parent):
+        frm = ttk.LabelFrame(parent, text="  Otomatik Tarama", padding=10)
+        frm.pack(fill="x", pady=(8, 0))
+
+        # Aktif et / kapat
+        self.v_sched_active = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frm, text="Otomatik taramayı etkinleştir",
+                        variable=self.v_sched_active,
+                        command=self._scheduler_toggle).pack(anchor="w")
+
+        inner = tk.Frame(frm)
+        inner.pack(fill="x", pady=(8, 0))
+
+        self.v_sched_mode = tk.StringVar(value="interval")
+
+        # Seçenek 1: Her N saatte bir
+        row1 = tk.Frame(inner)
+        row1.pack(fill="x", pady=(0, 4))
+        tk.Radiobutton(row1, text="Her", variable=self.v_sched_mode,
+                       value="interval", font=(self.FONT, 9),
+                       command=self._update_next_run).pack(side="left")
+        self.v_interval = tk.StringVar(value="24")
+        tk.Spinbox(row1, textvariable=self.v_interval, from_=1, to=168,
+                   width=5, font=(self.FONT, 9), relief="solid", bd=1,
+                   command=self._update_next_run).pack(side="left", padx=4)
+        tk.Label(row1, text="saatte bir", font=(self.FONT, 9)).pack(side="left")
+
+        # Seçenek 2: Her gün belirli saatte
+        row2 = tk.Frame(inner)
+        row2.pack(fill="x")
+        tk.Radiobutton(row2, text="Her gün saat", variable=self.v_sched_mode,
+                       value="daily", font=(self.FONT, 9),
+                       command=self._update_next_run).pack(side="left")
+        self.v_sched_hour = tk.StringVar(value="09")
+        self.v_sched_min  = tk.StringVar(value="00")
+        tk.Spinbox(row2, textvariable=self.v_sched_hour, from_=0, to=23,
+                   width=3, font=(self.FONT, 9), relief="solid", bd=1, format="%02.0f",
+                   command=self._update_next_run).pack(side="left", padx=(4, 2))
+        tk.Label(row2, text=":", font=(self.FONT, 9, "bold")).pack(side="left")
+        tk.Spinbox(row2, textvariable=self.v_sched_min, from_=0, to=59,
+                   width=3, font=(self.FONT, 9), relief="solid", bd=1, format="%02.0f",
+                   command=self._update_next_run).pack(side="left", padx=(2, 0))
+
+        # Sonraki tarama etiketi
+        self.lbl_next_run = tk.Label(frm, text="",
+                                     font=(self.FONT, 8, "italic"), fg="#1e8449")
+        self.lbl_next_run.pack(anchor="w", pady=(8, 0))
+
+    def _scheduler_toggle(self):
+        if self.v_sched_active.get():
+            self._sched_last_run = None
+            self._update_next_run()
+            self._scheduler_tick()
+        else:
+            self.lbl_next_run.config(text="")
+
+    def _update_next_run(self, *_):
+        if not self.v_sched_active.get():
+            return
+        now  = datetime.now()
+        mode = self.v_sched_mode.get()
+        if mode == "interval":
+            try:   hours = int(self.v_interval.get())
+            except ValueError: hours = 24
+            base     = self._sched_last_run or now
+            next_run = base + timedelta(hours=hours)
+        else:
+            try:
+                h = int(self.v_sched_hour.get())
+                m = int(self.v_sched_min.get())
+            except ValueError:
+                return
+            next_run = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(days=1)
+        self.lbl_next_run.config(
+            text=f"Sonraki tarama: {next_run.strftime('%d %b %Y  %H:%M')}")
+
+    def _scheduler_tick(self):
+        if not self.v_sched_active.get():
+            return
+        now  = datetime.now()
+        mode = self.v_sched_mode.get()
+        fire = False
+
+        if mode == "interval":
+            try:   hours = int(self.v_interval.get())
+            except ValueError: hours = 24
+            if (self._sched_last_run is None or
+                    (now - self._sched_last_run).total_seconds() >= hours * 3600):
+                fire = True
+        else:
+            try:
+                h = int(self.v_sched_hour.get())
+                m = int(self.v_sched_min.get())
+            except ValueError:
+                pass
+            else:
+                same_minute = (now.hour == h and now.minute == m)
+                not_today   = (self._sched_last_run is None or
+                               self._sched_last_run.date() < now.date())
+                if same_minute and not_today:
+                    fire = True
+
+        if fire and not self.running:
+            cfg = self._collect_silent()
+            if cfg:
+                self._sched_last_run = now
+                self._update_next_run()
+                self._log(f"\n  ⏰ Otomatik tarama — {now.strftime('%d %b %Y  %H:%M')}")
+                self._execute_scan(cfg)
+
+        self.root.after(30000, self._scheduler_tick)   # 30 saniyede bir kontrol
 
     def _search_section(self, parent):
         frm = ttk.LabelFrame(parent, text="  Arama Ayarları", padding=12)
@@ -478,6 +594,30 @@ class LiteratureScannerApp:
 
     # ── Validation & Scan ──────────────────────────────────────
 
+    def _collect_silent(self):
+        """_collect gibi ama hata dialog göstermez — zamanlayıcı için."""
+        recipient     = self.v_recipient.get().strip()
+        kw_raw        = self.v_keywords.get().strip()
+        keywords      = [k.strip() for k in kw_raw.split(",") if k.strip()]
+        active        = [p for p in PUBLISHERS if self.pub_vars[p["short"]].get()]
+        article_types = [k for k, v in self.type_vars.items() if v.get()]
+        if not recipient or not keywords or not active or not article_types:
+            self._log("  ⚠ Otomatik tarama: eksik bilgi, atlandı.")
+            return None
+        try:   days = max(1, int(self.v_days.get()))
+        except ValueError: days = 7
+        try:   maxr = max(1, int(self.v_max.get()))
+        except ValueError: maxr = 100
+        return {
+            "recipient_email": recipient,
+            "keywords":        keywords,
+            "keyword_mode":    self.v_mode.get(),
+            "days_back":       days,
+            "max_results":     maxr,
+            "active_pubs":     active,
+            "article_types":   article_types,
+        }
+
     def _collect(self):
         recipient = self.v_recipient.get().strip()
         kw_raw    = self.v_keywords.get().strip()
@@ -526,14 +666,15 @@ class LiteratureScannerApp:
         cfg = self._collect()
         if not cfg:
             return
-
-        self.running = True
-        self.btn_start.configure(state="disabled", text="⏳   Taranıyor…",
-                                 bg=self.BTN_STOP)
         self.log_box.configure(state="normal")
         self.log_box.delete("1.0", "end")
         self.log_box.configure(state="disabled")
+        self._execute_scan(cfg)
 
+    def _execute_scan(self, cfg):
+        self.running = True
+        self.btn_start.configure(state="disabled", text="⏳   Taranıyor…",
+                                 bg=self.BTN_STOP)
         threading.Thread(target=self._run_scan, args=(cfg,), daemon=True).start()
 
     def _run_scan(self, cfg):
