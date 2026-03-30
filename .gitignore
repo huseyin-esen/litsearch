@@ -9,6 +9,7 @@ dist/
 build/
 config.py
 config.json
+profiles.json
 build/
 dist/
 *.spec
