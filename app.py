@@ -327,10 +327,8 @@ class LiteratureScannerApp:
 
         top = tk.Frame(content, bg=self.BG)
         top.pack(fill="x")
-        self._recipient_section(top)
+        self._email_scheduler_section(top)
         self._search_section(top)
-
-        self._scheduler_section(content)
         self._publisher_section(content)
         self._action_bar(content)
         self._log_section(content)
@@ -345,10 +343,11 @@ class LiteratureScannerApp:
                  font=(self.FONT, 9),
                  bg=self.HEADER, fg="#aed6f1").pack()
 
-    def _recipient_section(self, parent):
-        frm = ttk.LabelFrame(parent, text="  E-Posta", padding=12)
+    def _email_scheduler_section(self, parent):
+        frm = ttk.LabelFrame(parent, text="  E-Posta ve Otomatik Tarama", padding=12)
         frm.pack(side="left", fill="both", expand=True, padx=(0, 8))
 
+        # Alıcı e-posta
         tk.Label(frm, text="Sonuçların gönderileceği e-posta:",
                  font=(self.FONT, 9), anchor="w").pack(fill="x", pady=(0, 4))
         self.v_recipient = tk.StringVar()
@@ -356,15 +355,9 @@ class LiteratureScannerApp:
                  font=(self.FONT, 11), relief="solid", bd=1,
                  bg="white").pack(fill="x", ipady=6)
 
-        tk.Label(frm,
-                 text="Tarama sonuçları bu adrese HTML rapor olarak gönderilir.",
-                 font=(self.FONT, 8), fg="#888", anchor="w").pack(fill="x", pady=(6, 0))
+        ttk.Separator(frm, orient="horizontal").pack(fill="x", pady=(12, 8))
 
-    def _scheduler_section(self, parent):
-        frm = ttk.LabelFrame(parent, text="  Otomatik Tarama", padding=10)
-        frm.pack(fill="x", pady=(8, 0))
-
-        # Aktif et / kapat
+        # Otomatik tarama
         self.v_sched_active = tk.BooleanVar(value=False)
         ttk.Checkbutton(frm, text="Otomatik taramayı etkinleştir",
                         variable=self.v_sched_active,
